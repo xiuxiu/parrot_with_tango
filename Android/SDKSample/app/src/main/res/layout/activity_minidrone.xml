@@ -101,7 +101,7 @@
         android:width="110dp"/>
 
     <Button
-        android:layout_width="110dp"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="back"
         android:id="@+id/backBt"
@@ -165,4 +165,33 @@
         android:layout_alignRight="@+id/gazDownBt"
         android:layout_alignEnd="@+id/gazDownBt"
         android:gravity="center_horizontal"/>
+
+    <EditText
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="0.5"
+        android:ems="10"
+        android:layout_alignParentLeft="true"
+        android:layout_alignParentStart="true"
+        android:layout_alignParentBottom="true"
+        android:width="60dp"
+        android:id="@+id/PosX" />
+    <EditText
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="0.5"
+        android:ems="10"
+        android:layout_toRightOf="@+id/PosX"
+        android:layout_alignParentBottom="true"
+        android:width="60dp"
+        android:id="@+id/PosY" />
+
+    <Button
+        android:text="Go"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_toRightOf="@+id/PosY"
+        android:layout_alignParentBottom="true"
+        android:width="40dp"
+        android:id="@+id/go_btn" />
 </RelativeLayout>

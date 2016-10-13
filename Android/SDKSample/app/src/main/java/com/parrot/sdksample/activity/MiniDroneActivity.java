@@ -4,13 +4,24 @@ import android.app.ProgressDialog;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.TextView;
 
+import com.google.atap.tangoservice.Tango;
+import com.google.atap.tangoservice.TangoConfig;
+import com.google.atap.tangoservice.TangoCoordinateFramePair;
+import com.google.atap.tangoservice.TangoErrorException;
+import com.google.atap.tangoservice.TangoEvent;
+import com.google.atap.tangoservice.TangoOutOfDateException;
+import com.google.atap.tangoservice.TangoPointCloudData;
+import com.google.atap.tangoservice.TangoPoseData;
+import com.google.atap.tangoservice.TangoXyzIjData;
 import com.parrot.arsdk.arcommands.ARCOMMANDS_MINIDRONE_MEDIARECORDEVENT_PICTUREEVENTCHANGED_ERROR_ENUM;
 import com.parrot.arsdk.arcommands.ARCOMMANDS_MINIDRONE_PILOTINGSTATE_FLYINGSTATECHANGED_STATE_ENUM;
 import com.parrot.arsdk.arcontroller.ARCONTROLLER_DEVICE_STATE_ENUM;
@@ -18,9 +29,14 @@ import com.parrot.arsdk.ardiscovery.ARDiscoveryDeviceService;
 import com.parrot.sdksample.R;
 import com.parrot.sdksample.drone.MiniDrone;
 
+import java.util.ArrayList;
+
 public class MiniDroneActivity extends AppCompatActivity {
     private static final String TAG = "MiniDroneActivity";
+    private static final float SPEED = 0.002f;
     private MiniDrone mMiniDrone;
+    private Tango mTango;
+    private TangoConfig mConfig;
 
     private ProgressDialog mConnectionProgressDialog;
     private ProgressDialog mDownloadProgressDialog;
@@ -28,6 +44,9 @@ public class MiniDroneActivity extends AppCompatActivity {
     private TextView mBatteryLabel;
     private Button mTakeOffLandBt;
     private Button mDownloadBt;
+    private Button mGoBt;
+    private EditText posXText;
+    private EditText posYText;
 
     private int mNbMaxDownload;
     private int mCurrentDownloadIndex;
@@ -131,6 +150,49 @@ public class MiniDroneActivity extends AppCompatActivity {
                     }
                 });
                 mDownloadProgressDialog.show();
+            }
+        });
+        posXText = (EditText) findViewById(R.id.PosX);
+        posYText = (EditText) findViewById(R.id.PosY);
+        mGoBt = (Button)findViewById(R.id.go_btn);
+        mGoBt.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                float posX = Float.parseFloat(posXText.getText().toString());
+                float posY = Float.parseFloat(posYText.getText().toString());
+
+                int xSteps = (int) java.lang.Math.abs(posX / (SPEED*5) );
+                int ySteps = (int) java.lang.Math.abs(posY / (SPEED*5) );
+                for (int i = 0 ; i < xSteps; i ++ )
+                {
+                    if ( posX > 0 )
+                    {
+                        mMiniDrone.setPitch((byte) 20);
+                    }
+                    else
+                    {
+                        mMiniDrone.setPitch((byte) -20);
+                    }
+                    mMiniDrone.setFlag((byte) 1);
+                    SystemClock.sleep(30);
+                }
+                mMiniDrone.setPitch((byte) 0);
+                mMiniDrone.setFlag((byte) 0);
+                SystemClock.sleep(500);
+                for (int i = 0 ; i < ySteps; i ++ )
+                {
+                    if ( posY > 0 )
+                    {
+                        mMiniDrone.setRoll((byte) 20);
+                    }
+                    else
+                    {
+                        mMiniDrone.setRoll((byte) -20);
+                    }
+                    mMiniDrone.setFlag((byte) 1);
+                    SystemClock.sleep(30);
+                }
+                mMiniDrone.setRoll((byte) 0);
+                mMiniDrone.setFlag((byte) 0);
             }
         });
 
@@ -421,4 +483,201 @@ public class MiniDroneActivity extends AppCompatActivity {
             }
         }
     };
+    @Override
+    protected void onResume() {
+        super.onResume();
+
+        // Initialize Tango Service as a normal Android Service, since we call mTango.disconnect()
+        // in onPause, this will unbind Tango Service, so every time when onResume gets called, we
+        // should create a new Tango object.
+        mTango = new Tango(MiniDroneActivity.this, new Runnable() {
+            // Pass in a Runnable to be called from UI thread when Tango is ready, this Runnable
+            // will be running on a new thread.
+            // When Tango is ready, we can call Tango functions safely here only when there is no UI
+            // thread changes involved.
+            @Override
+            public void run() {
+                synchronized (MiniDroneActivity.this) {
+                    mConfig = setupTangoConfig(mTango);
+
+                    try {
+                        setTangoListeners();
+                    } catch (TangoErrorException e) {
+                        Log.e(TAG, getString(R.string.exception_tango_error), e);
+                    } catch (SecurityException e) {
+                        Log.e(TAG, getString(R.string.permission_motion_tracking), e);
+                    }
+                    try {
+                        mTango.connect(mConfig);
+                    } catch (TangoOutOfDateException e) {
+                        Log.e(TAG, getString(R.string.exception_out_of_date), e);
+                    } catch (TangoErrorException e) {
+                        Log.e(TAG, getString(R.string.exception_tango_error), e);
+                    }
+                }
+            }
+        });
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        synchronized (this) {
+            try {
+                mTango.disconnect();
+            } catch (TangoErrorException e) {
+                Log.e(TAG, getString(R.string.exception_tango_error), e);
+            }
+        }
+    }
+
+    /**
+     * Sets up the tango configuration object. Make sure mTango object is initialized before
+     * making this call.
+     */
+    private TangoConfig setupTangoConfig(Tango tango) {
+        // Create a new Tango Configuration and enable the HelloMotionTrackingActivity API.
+        TangoConfig config = new TangoConfig();
+        config = tango.getConfig(config.CONFIG_TYPE_DEFAULT);
+        config.putBoolean(TangoConfig.KEY_BOOLEAN_MOTIONTRACKING, true);
+
+        // Tango service should automatically attempt to recover when it enters an invalid state.
+        config.putBoolean(TangoConfig.KEY_BOOLEAN_AUTORECOVERY, true);
+        return config;
+    }
+
+    /**
+     * Set up the callback listeners for the Tango service, then begin using the Motion
+     * Tracking API. This is called in response to the user clicking the 'Start' Button.
+     */
+    private void setTangoListeners() {
+        // Lock configuration and connect to Tango
+        // Select coordinate frame pair
+        final ArrayList<TangoCoordinateFramePair> framePairs =
+                new ArrayList<TangoCoordinateFramePair>();
+        framePairs.add(new TangoCoordinateFramePair(
+                TangoPoseData.COORDINATE_FRAME_START_OF_SERVICE,
+                TangoPoseData.COORDINATE_FRAME_DEVICE));
+
+        class MyTangoUpdateListener implements Tango.OnTangoUpdateListener
+        {
+            private TangoPoseData lastPose;
+            private boolean movingLeft = false;
+            private boolean movingRight = false;
+            private boolean movingForward = false;
+            private boolean movingBack = false;
+
+            MyTangoUpdateListener()
+            {
+                this.lastPose = new TangoPoseData();
+            }
+            @Override
+            public void onPoseAvailable(final TangoPoseData pose) {
+                float[] lastPositionArray = this.lastPose.getTranslationAsFloats();
+                float[] positionArray = pose.getTranslationAsFloats();
+                float deltaX = positionArray[0] - lastPositionArray[0];
+                float deltaY = positionArray[1] - lastPositionArray[1];
+                if ( deltaX > SPEED )
+                {
+                    mMiniDrone.setRoll((byte) 30);
+                    mMiniDrone.setFlag((byte) 1);
+                    this.movingRight = true;
+                    Log.i(TAG, "Control: Right Start");
+                }
+                else if ( deltaX <= SPEED && deltaX >=0 && this.movingRight)
+                {
+                    mMiniDrone.setRoll((byte) 0);
+                    mMiniDrone.setFlag((byte) 0);
+                    this.movingRight = false;
+                    Log.i(TAG, "Control: Right Stop");
+                }
+                else if ( deltaX < -SPEED)
+                {
+                    mMiniDrone.setRoll((byte) -30);
+                    mMiniDrone.setFlag((byte) 1);
+                    this.movingLeft = true;
+                    Log.i(TAG, "Control: Left Start");
+                }
+                else if ( deltaX >= -SPEED & deltaX < 0 && this.movingLeft)
+                {
+                    mMiniDrone.setRoll((byte) 0);
+                    mMiniDrone.setFlag((byte) 0);
+                    this.movingLeft = false;
+                    Log.i(TAG, "Control: Left Stop");
+                }
+                if ( deltaY > SPEED)
+                {
+                    mMiniDrone.setPitch((byte) 30);
+                    mMiniDrone.setFlag((byte) 1);
+                    this.movingForward = true;
+                    Log.i(TAG, "Control: Forward Start");
+                }
+                else if (  deltaY <= SPEED && deltaY >= 0 && this.movingForward)
+                {
+                    mMiniDrone.setPitch((byte) 0);
+                    mMiniDrone.setFlag((byte) 0);
+                    this.movingForward = false;
+                    Log.i(TAG, "Control: Forward Stop");
+                }
+                else if (deltaY < -SPEED)
+                {
+                    mMiniDrone.setPitch((byte) -30);
+                    mMiniDrone.setFlag((byte) 1);
+                    this.movingBack = true;
+                    Log.i(TAG, "Control: Back Start");
+                }
+                else if (deltaY > -SPEED && deltaY < 0 && this.movingBack)
+                {
+                    mMiniDrone.setPitch((byte) 0);
+                    mMiniDrone.setFlag((byte) 0);
+                    this.movingBack = false;
+                    Log.i(TAG, "Control: Back Stop");
+                }
+                this.lastPose = pose;
+                logPose(pose);
+            }
+
+            @Override
+            public void onXyzIjAvailable(TangoXyzIjData xyzIj) {
+                // We are not using onXyzIjAvailable for this app.
+            }
+
+            @Override
+            public void onPointCloudAvailable(TangoPointCloudData pointCloud) {
+                // We are not using onPointCloudAvailable for this app.
+            }
+
+            @Override
+            public void onTangoEvent(final TangoEvent event) {
+                // Ignoring TangoEvents.
+            }
+
+            @Override
+            public void onFrameAvailable(int cameraId) {
+                // We are not using onFrameAvailable for this application.
+            }
+        }
+        // Listen for new Tango data
+        mTango.connectListener(framePairs, new MyTangoUpdateListener());
+    }
+
+    /**
+     * Log the Position and Orientation of the given pose in the Logcat as information.
+     *
+     * @param pose the pose to log.
+     */
+    private void logPose(TangoPoseData pose) {
+        StringBuilder stringBuilder = new StringBuilder();
+
+        float translation[] = pose.getTranslationAsFloats();
+        stringBuilder.append("Position: " +
+                translation[0] + ", " + translation[1] + ", " + translation[2]);
+
+        float orientation[] = pose.getRotationAsFloats();
+        stringBuilder.append(". Orientation: " +
+                orientation[0] + ", " + orientation[1] + ", " +
+                orientation[2] + ", " + orientation[3]);
+
+        Log.i(TAG, stringBuilder.toString());
+    }
 }

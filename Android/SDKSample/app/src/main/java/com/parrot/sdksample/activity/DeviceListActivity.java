@@ -12,6 +12,15 @@ import android.widget.BaseAdapter;
 import android.widget.ListView;
 import android.widget.TextView;
 
+import com.google.atap.tangoservice.Tango;
+import com.google.atap.tangoservice.TangoConfig;
+import com.google.atap.tangoservice.TangoCoordinateFramePair;
+import com.google.atap.tangoservice.TangoErrorException;
+import com.google.atap.tangoservice.TangoEvent;
+import com.google.atap.tangoservice.TangoOutOfDateException;
+import com.google.atap.tangoservice.TangoPointCloudData;
+import com.google.atap.tangoservice.TangoPoseData;
+import com.google.atap.tangoservice.TangoXyzIjData;
 import com.parrot.arsdk.ARSDK;
 import com.parrot.arsdk.ardiscovery.ARDISCOVERY_PRODUCT_ENUM;
 import com.parrot.arsdk.ardiscovery.ARDiscoveryDeviceService;
@@ -28,6 +37,8 @@ public class DeviceListActivity extends AppCompatActivity {
     private static final String TAG = "DeviceListActivity";
 
     public DroneDiscoverer mDroneDiscoverer;
+    private Tango mTango;
+    private TangoConfig mConfig;
 
     private final List<ARDiscoveryDeviceService> mDronesList = new ArrayList<>();
 
@@ -103,6 +114,37 @@ public class DeviceListActivity extends AppCompatActivity {
 
         // start discovering
         mDroneDiscoverer.startDiscovering();
+
+        // Initialize Tango Service as a normal Android Service, since we call mTango.disconnect()
+        // in onPause, this will unbind Tango Service, so every time when onResume gets called, we
+        // should create a new Tango object.
+        mTango = new Tango(DeviceListActivity.this, new Runnable() {
+            // Pass in a Runnable to be called from UI thread when Tango is ready, this Runnable
+            // will be running on a new thread.
+            // When Tango is ready, we can call Tango functions safely here only when there is no UI
+            // thread changes involved.
+            @Override
+            public void run() {
+                synchronized (DeviceListActivity.this) {
+                    mConfig = setupTangoConfig(mTango);
+
+                    try {
+                        setTangoListeners();
+                    } catch (TangoErrorException e) {
+                        Log.e(TAG, getString(R.string.exception_tango_error), e);
+                    } catch (SecurityException e) {
+                        Log.e(TAG, getString(R.string.permission_motion_tracking), e);
+                    }
+                    try {
+                        mTango.connect(mConfig);
+                    } catch (TangoOutOfDateException e) {
+                        Log.e(TAG, getString(R.string.exception_out_of_date), e);
+                    } catch (TangoErrorException e) {
+                        Log.e(TAG, getString(R.string.exception_tango_error), e);
+                    }
+                }
+            }
+        });
     }
 
     @Override
@@ -114,6 +156,13 @@ public class DeviceListActivity extends AppCompatActivity {
         mDroneDiscoverer.stopDiscovering();
         mDroneDiscoverer.cleanup();
         mDroneDiscoverer.removeListener(mDiscovererListener);
+        synchronized (this) {
+            try {
+                mTango.disconnect();
+            } catch (TangoErrorException e) {
+                Log.e(TAG, getString(R.string.exception_tango_error), e);
+            }
+        }
     }
 
     private final DroneDiscoverer.Listener mDiscovererListener = new  DroneDiscoverer.Listener() {
@@ -173,5 +222,82 @@ public class DeviceListActivity extends AppCompatActivity {
             return rowView;
         }
     };
+
+    /**
+     * Sets up the tango configuration object. Make sure mTango object is initialized before
+     * making this call.
+     */
+    private TangoConfig setupTangoConfig(Tango tango) {
+        // Create a new Tango Configuration and enable the HelloMotionTrackingActivity API.
+        TangoConfig config = new TangoConfig();
+        config = tango.getConfig(config.CONFIG_TYPE_DEFAULT);
+        config.putBoolean(TangoConfig.KEY_BOOLEAN_MOTIONTRACKING, true);
+
+        // Tango service should automatically attempt to recover when it enters an invalid state.
+        config.putBoolean(TangoConfig.KEY_BOOLEAN_AUTORECOVERY, true);
+        return config;
+    }
+
+    /**
+     * Set up the callback listeners for the Tango service, then begin using the Motion
+     * Tracking API. This is called in response to the user clicking the 'Start' Button.
+     */
+    private void setTangoListeners() {
+        // Lock configuration and connect to Tango
+        // Select coordinate frame pair
+        final ArrayList<TangoCoordinateFramePair> framePairs =
+                new ArrayList<TangoCoordinateFramePair>();
+        framePairs.add(new TangoCoordinateFramePair(
+                TangoPoseData.COORDINATE_FRAME_START_OF_SERVICE,
+                TangoPoseData.COORDINATE_FRAME_DEVICE));
+
+        // Listen for new Tango data
+        mTango.connectListener(framePairs, new Tango.OnTangoUpdateListener() {
+            @Override
+            public void onPoseAvailable(final TangoPoseData pose) {
+                logPose(pose);
+            }
+
+            @Override
+            public void onXyzIjAvailable(TangoXyzIjData xyzIj) {
+                // We are not using onXyzIjAvailable for this app.
+            }
+
+            @Override
+            public void onPointCloudAvailable(TangoPointCloudData pointCloud) {
+                // We are not using onPointCloudAvailable for this app.
+            }
+
+            @Override
+            public void onTangoEvent(final TangoEvent event) {
+                // Ignoring TangoEvents.
+            }
+
+            @Override
+            public void onFrameAvailable(int cameraId) {
+                // We are not using onFrameAvailable for this application.
+            }
+        });
+    }
+
+    /**
+     * Log the Position and Orientation of the given pose in the Logcat as information.
+     *
+     * @param pose the pose to log.
+     */
+    private void logPose(TangoPoseData pose) {
+        StringBuilder stringBuilder = new StringBuilder();
+
+        float translation[] = pose.getTranslationAsFloats();
+        stringBuilder.append("Position: " +
+                translation[0] + ", " + translation[1] + ", " + translation[2]);
+
+        float orientation[] = pose.getRotationAsFloats();
+        stringBuilder.append(". Orientation: " +
+                orientation[0] + ", " + orientation[1] + ", " +
+                orientation[2] + ", " + orientation[3]);
+
+        Log.i(TAG, stringBuilder.toString());
+    }
 
 }
