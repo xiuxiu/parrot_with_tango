@@ -5,41 +5,38 @@ import android.os.Handler;
 import android.support.annotation.NonNull;
 import android.util.Log;
 
-import com.parrot.arsdk.arcommands.ARCOMMANDS_JUMPINGSUMO_MEDIARECORDEVENT_PICTUREEVENTCHANGED_ERROR_ENUM;
-import com.parrot.arsdk.arcontroller.ARAudioFrame;
+import com.parrot.arsdk.arcommands.ARCOMMANDS_MINIDRONE_MEDIARECORDEVENT_PICTUREEVENTCHANGED_ERROR_ENUM;
+import com.parrot.arsdk.arcommands.ARCOMMANDS_MINIDRONE_PILOTINGSTATE_FLYINGMODECHANGED_MODE_ENUM;
+import com.parrot.arsdk.arcommands.ARCOMMANDS_MINIDRONE_PILOTINGSTATE_FLYINGSTATECHANGED_STATE_ENUM;
+import com.parrot.arsdk.arcommands.ARCOMMANDS_MINIDRONE_PILOTING_FLYINGMODE_MODE_ENUM;
 import com.parrot.arsdk.arcontroller.ARCONTROLLER_DEVICE_STATE_ENUM;
 import com.parrot.arsdk.arcontroller.ARCONTROLLER_DICTIONARY_KEY_ENUM;
 import com.parrot.arsdk.arcontroller.ARCONTROLLER_ERROR_ENUM;
 import com.parrot.arsdk.arcontroller.ARControllerArgumentDictionary;
-import com.parrot.arsdk.arcontroller.ARControllerCodec;
 import com.parrot.arsdk.arcontroller.ARControllerDictionary;
 import com.parrot.arsdk.arcontroller.ARControllerException;
 import com.parrot.arsdk.arcontroller.ARDeviceController;
 import com.parrot.arsdk.arcontroller.ARDeviceControllerListener;
-import com.parrot.arsdk.arcontroller.ARDeviceControllerStreamListener;
 import com.parrot.arsdk.arcontroller.ARFeatureCommon;
-import com.parrot.arsdk.arcontroller.ARFeatureJumpingSumo;
-import com.parrot.arsdk.arcontroller.ARFrame;
+import com.parrot.arsdk.arcontroller.ARFeatureMiniDrone;
 import com.parrot.arsdk.ardiscovery.ARDISCOVERY_PRODUCT_ENUM;
 import com.parrot.arsdk.ardiscovery.ARDISCOVERY_PRODUCT_FAMILY_ENUM;
 import com.parrot.arsdk.ardiscovery.ARDiscoveryDevice;
-import com.parrot.arsdk.ardiscovery.ARDiscoveryDeviceNetService;
+import com.parrot.arsdk.ardiscovery.ARDiscoveryDeviceBLEService;
 import com.parrot.arsdk.ardiscovery.ARDiscoveryDeviceService;
 import com.parrot.arsdk.ardiscovery.ARDiscoveryException;
 import com.parrot.arsdk.ardiscovery.ARDiscoveryService;
-import com.parrot.arsdk.arsal.ARNativeData;
+import com.parrot.arsdk.arsal.ARSALBLEManager;
 import com.parrot.arsdk.arutils.ARUtilsException;
 import com.parrot.arsdk.arutils.ARUtilsManager;
 
 import java.util.ArrayList;
 import java.util.List;
 
-public class JSDrone {
-    private static final String TAG = "JSDrone";
+public class SwingDrone {
+    private static final String TAG = "SwingDrone";
 
     private static final int DEVICE_PORT = 21;
-
-    private int audioStreamBitField;
 
     public interface Listener {
         /**
@@ -57,47 +54,25 @@ public class JSDrone {
         void onBatteryChargeChanged(int batteryPercentage);
 
         /**
+         * Called when the piloting state changes
+         * Called in the main thread
+         * @param state the piloting state of the drone
+         */
+        void onPilotingStateChanged(ARCOMMANDS_MINIDRONE_PILOTINGSTATE_FLYINGSTATECHANGED_STATE_ENUM state);
+
+        /**
+         * Called when the flying mode has changed
+         * Called in the main thread
+         * @param flyingMode the new flying mode
+         */
+        void onFlyingModeChanged(ARCOMMANDS_MINIDRONE_PILOTINGSTATE_FLYINGMODECHANGED_MODE_ENUM flyingMode);
+
+        /**
          * Called when a picture is taken
          * Called on a separate thread
          * @param error ERROR_OK if picture has been taken, otherwise describe the error
          */
-        void onPictureTaken(ARCOMMANDS_JUMPINGSUMO_MEDIARECORDEVENT_PICTUREEVENTCHANGED_ERROR_ENUM error);
-
-        /**
-         * Called when audio state received
-         * Called on a separate thread
-         * @param inputEnabled true if the audio stream input is enabled else false
-         * @param outputEnabled true if the audio stream output is enabled else false
-         */
-        void onAudioStateReceived(boolean inputEnabled, boolean outputEnabled);
-
-        /**
-         * Called when the video decoder should be configured
-         * Called on a separate thread
-         * @param codec the codec to configure the decoder with
-         */
-        void configureDecoder(ARControllerCodec codec);
-
-        /**
-         * Called when a video frame has been received
-         * Called on a separate thread
-         * @param frame the video frame
-         */
-        void onFrameReceived(ARFrame frame);
-
-        /**
-         * Called when the audio decoder should be configured
-         * Called on a separate thread
-         * @param codec the codec to configure the decoder with
-         */
-        void configureAudioDecoder(ARControllerCodec codec);
-
-        /**
-         * Called when a audio frame has been received
-         * Called on a separate thread
-         * @param frame the audio frame
-         */
-        void onAudioFrameReceived(ARFrame frame);
+        void onPictureTaken(ARCOMMANDS_MINIDRONE_MEDIARECORDEVENT_PICTUREEVENTCHANGED_ERROR_ENUM error);
 
         /**
          * Called before medias will be downloaded
@@ -126,14 +101,18 @@ public class JSDrone {
 
     private final Handler mHandler;
 
+    private final Context mContext;
+
     private ARDeviceController mDeviceController;
     private SDCardModule mSDCardModule;
     private ARCONTROLLER_DEVICE_STATE_ENUM mState;
+    private ARCOMMANDS_MINIDRONE_PILOTINGSTATE_FLYINGSTATECHANGED_STATE_ENUM mFlyingState;
     private String mCurrentRunId;
     private ARDISCOVERY_PRODUCT_ENUM mProductType;
 
-    public JSDrone(Context context, @NonNull ARDiscoveryDeviceService deviceService) {
+    public SwingDrone(Context context, @NonNull ARDiscoveryDeviceService deviceService) {
 
+        mContext = context;
         mListeners = new ArrayList<>();
 
         // needed because some callbacks will be called on the main thread
@@ -144,34 +123,16 @@ public class JSDrone {
         // if the product type of the deviceService match with the types supported
         mProductType = ARDiscoveryService.getProductFromProductID(deviceService.getProductID());
         ARDISCOVERY_PRODUCT_FAMILY_ENUM family = ARDiscoveryService.getProductFamily(mProductType);
-        if (ARDISCOVERY_PRODUCT_FAMILY_ENUM.ARDISCOVERY_PRODUCT_FAMILY_JS.equals(family)) {
+        if (ARDISCOVERY_PRODUCT_FAMILY_ENUM.ARDISCOVERY_PRODUCT_FAMILY_MINIDRONE.equals(family)) {
 
-            ARDiscoveryDevice discoveryDevice = createDiscoveryDevice(deviceService, mProductType);
+            ARDiscoveryDevice discoveryDevice = createDiscoveryDevice(context, deviceService, mProductType);
             if (discoveryDevice != null) {
                 mDeviceController = createDeviceController(discoveryDevice);
                 discoveryDevice.dispose();
             }
 
-            try
-            {
-                String productIP = ((ARDiscoveryDeviceNetService)(deviceService.getDevice())).getIp();
-
-                ARUtilsManager ftpListManager = new ARUtilsManager();
-                ARUtilsManager ftpQueueManager = new ARUtilsManager();
-
-                ftpListManager.initWifiFtp(productIP, DEVICE_PORT, ARUtilsManager.FTP_ANONYMOUS, "");
-                ftpQueueManager.initWifiFtp(productIP, DEVICE_PORT, ARUtilsManager.FTP_ANONYMOUS, "");
-
-                mSDCardModule = new SDCardModule(ftpListManager, ftpQueueManager);
-                mSDCardModule.addListener(mSDCardModuleListener);
-            }
-            catch (ARUtilsException e)
-            {
-                Log.e(TAG, "Exception", e);
-            }
-
         } else {
-            Log.e(TAG, "DeviceService type is not supported by JSDrone");
+            Log.e(TAG, "DeviceService type is not supported by MiniDrone");
         }
     }
 
@@ -233,55 +194,85 @@ public class JSDrone {
         return mState;
     }
 
+    /**
+     * Get the current flying state
+     * @return the flying state
+     */
+    public ARCOMMANDS_MINIDRONE_PILOTINGSTATE_FLYINGSTATECHANGED_STATE_ENUM getFlyingState() {
+        return mFlyingState;
+    }
+
+    public void takeOff() {
+        if ((mDeviceController != null) && (mState.equals(ARCONTROLLER_DEVICE_STATE_ENUM.ARCONTROLLER_DEVICE_STATE_RUNNING))) {
+            mDeviceController.getFeatureMiniDrone().sendPilotingTakeOff();
+        }
+    }
+
+    public void land() {
+        if ((mDeviceController != null) && (mState.equals(ARCONTROLLER_DEVICE_STATE_ENUM.ARCONTROLLER_DEVICE_STATE_RUNNING))) {
+            mDeviceController.getFeatureMiniDrone().sendPilotingLanding();
+        }
+    }
+
+    public void emergency() {
+        if ((mDeviceController != null) && (mState.equals(ARCONTROLLER_DEVICE_STATE_ENUM.ARCONTROLLER_DEVICE_STATE_RUNNING))) {
+            mDeviceController.getFeatureMiniDrone().sendPilotingEmergency();
+        }
+    }
+
     public void takePicture() {
         if ((mDeviceController != null) && (mState.equals(ARCONTROLLER_DEVICE_STATE_ENUM.ARCONTROLLER_DEVICE_STATE_RUNNING))) {
-            // JumpingSumo (not evo) are still using old deprecated command
-            if (ARDISCOVERY_PRODUCT_ENUM.ARDISCOVERY_PRODUCT_JS.equals(mProductType)) {
-                mDeviceController.getFeatureJumpingSumo().sendMediaRecordPicture((byte)0);
-            } else {
-                mDeviceController.getFeatureJumpingSumo().sendMediaRecordPictureV2();
-            }
-
+            mDeviceController.getFeatureMiniDrone().sendMediaRecordPictureV2();
         }
     }
 
-    public void setAudioStreamEnabled(boolean input, boolean output) {
-        byte value = (byte)((input ? 1 : 0) | (output ? 2 : 0));
-
+    public void changeFlyingMode(ARCOMMANDS_MINIDRONE_PILOTING_FLYINGMODE_MODE_ENUM flyingMode) {
         if ((mDeviceController != null) && (mState.equals(ARCONTROLLER_DEVICE_STATE_ENUM.ARCONTROLLER_DEVICE_STATE_RUNNING))) {
-            mDeviceController.getFeatureCommon().sendAudioControllerReadyForStreaming(value);
+            mDeviceController.getFeatureMiniDrone().sendPilotingFlyingMode(flyingMode);
         }
     }
 
     /**
-     * Set the speed of the Jumping Sumo
-     * Note that {@link JSDrone#setFlag(byte)} should be set to 1 in order to take in account the speed value
-     * @param speed value in percentage from -100 to 100
+     * Set the forward/backward angle of the drone
+     * Note that {@link SwingDrone#setFlag(byte)} should be set to 1 in order to take in account the pitch value
+     * @param pitch value in percentage from -100 to 100
      */
-    public void setSpeed(byte speed) {
+    public void setPitch(byte pitch) {
         if ((mDeviceController != null) && (mState.equals(ARCONTROLLER_DEVICE_STATE_ENUM.ARCONTROLLER_DEVICE_STATE_RUNNING))) {
-            mDeviceController.getFeatureJumpingSumo().setPilotingPCMDSpeed(speed);
+            mDeviceController.getFeatureMiniDrone().setPilotingPCMDPitch(pitch);
         }
     }
 
     /**
-     * Set the turn angle of the Jumping Sumo
-     * Note that {@link JSDrone#setFlag(byte)} should be set to 1 in order to take in account the turn value
-     * @param turn value in percentage from -100 to 100
+     * Set the side angle of the drone
+     * Note that {@link SwingDrone#setFlag(byte)} should be set to 1 in order to take in account the roll value
+     * @param roll value in percentage from -100 to 100
      */
-    public void setTurn(byte turn) {
+    public void setRoll(byte roll) {
         if ((mDeviceController != null) && (mState.equals(ARCONTROLLER_DEVICE_STATE_ENUM.ARCONTROLLER_DEVICE_STATE_RUNNING))) {
-            mDeviceController.getFeatureJumpingSumo().setPilotingPCMDTurn(turn);
+            mDeviceController.getFeatureMiniDrone().setPilotingPCMDRoll(roll);
+        }
+    }
+
+    public void setYaw(byte yaw) {
+        if ((mDeviceController != null) && (mState.equals(ARCONTROLLER_DEVICE_STATE_ENUM.ARCONTROLLER_DEVICE_STATE_RUNNING))) {
+            mDeviceController.getFeatureMiniDrone().setPilotingPCMDYaw(yaw);
+        }
+    }
+
+    public void setGaz(byte gaz) {
+        if ((mDeviceController != null) && (mState.equals(ARCONTROLLER_DEVICE_STATE_ENUM.ARCONTROLLER_DEVICE_STATE_RUNNING))) {
+            mDeviceController.getFeatureMiniDrone().setPilotingPCMDGaz(gaz);
         }
     }
 
     /**
-     * Take in account or not the speed and turn values
-     * @param flag 1 if the speed and turn values should be used, 0 otherwise
+     * Take in account or not the pitch and roll values
+     * @param flag 1 if the pitch and roll values should be used, 0 otherwise
      */
     public void setFlag(byte flag) {
         if ((mDeviceController != null) && (mState.equals(ARCONTROLLER_DEVICE_STATE_ENUM.ARCONTROLLER_DEVICE_STATE_RUNNING))) {
-            mDeviceController.getFeatureJumpingSumo().setPilotingPCMDFlag(flag);
+            mDeviceController.getFeatureMiniDrone().setPilotingPCMDFlag(flag);
         }
     }
 
@@ -291,6 +282,22 @@ public class JSDrone {
      * If no run id is available, download all medias of the day
      */
     public void getLastFlightMedias() {
+        try
+        {
+            ARUtilsManager ftpListManager = new ARUtilsManager();
+            ARUtilsManager ftpQueueManager = new ARUtilsManager();
+
+            ftpListManager.initBLEFtp(mContext, ARSALBLEManager.getInstance(mContext).getGatt(), DEVICE_PORT);
+            ftpQueueManager.initBLEFtp(mContext, ARSALBLEManager.getInstance(mContext).getGatt(), DEVICE_PORT);
+
+            mSDCardModule = new SDCardModule(ftpListManager, ftpQueueManager);
+            mSDCardModule.addListener(mSDCardModuleListener);
+        }
+        catch (ARUtilsException e)
+        {
+            Log.e(TAG, "Exception", e);
+        }
+
         String runId = mCurrentRunId;
         if ((runId != null) && !runId.isEmpty()) {
             mSDCardModule.getFlightMedias(runId);
@@ -301,16 +308,18 @@ public class JSDrone {
     }
 
     public void cancelGetLastFlightMedias() {
-        mSDCardModule.cancelGetFlightMedias();
+        if (mSDCardModule != null) {
+            mSDCardModule.cancelGetFlightMedias();
+        }
     }
 
-    private ARDiscoveryDevice createDiscoveryDevice(@NonNull ARDiscoveryDeviceService service, ARDISCOVERY_PRODUCT_ENUM productType) {
+    private ARDiscoveryDevice createDiscoveryDevice(Context context, @NonNull ARDiscoveryDeviceService service, ARDISCOVERY_PRODUCT_ENUM productType) {
         ARDiscoveryDevice device = null;
         try {
             device = new ARDiscoveryDevice();
 
-            ARDiscoveryDeviceNetService netDeviceService = (ARDiscoveryDeviceNetService) service.getDevice();
-            device.initWifi(productType, netDeviceService.getName(), netDeviceService.getIp(), netDeviceService.getPort());
+            ARDiscoveryDeviceBLEService bleDeviceService = (ARDiscoveryDeviceBLEService) service.getDevice();
+            device.initBLE(productType, context.getApplicationContext(), bleDeviceService.getBluetoothDevice());
 
         } catch (ARDiscoveryException e) {
             Log.e(TAG, "Exception", e);
@@ -326,61 +335,11 @@ public class JSDrone {
             deviceController = new ARDeviceController(discoveryDevice);
 
             deviceController.addListener(mDeviceControllerListener);
-            deviceController.addStreamListener(mStreamListener);
-            deviceController.addAudioStreamListener(mAudioStreamListener);
         } catch (ARControllerException e) {
             Log.e(TAG, "Exception", e);
         }
 
         return deviceController;
-    }
-
-    public void sendStreamingFrame(ARNativeData data) {
-        if ((mDeviceController != null) && (mState.equals(ARCONTROLLER_DEVICE_STATE_ENUM.ARCONTROLLER_DEVICE_STATE_RUNNING))) {
-            mDeviceController.sendStreamingFrame(data);
-        }
-    }
-
-    public boolean hasOutputVideoStream() {
-        boolean res = false;
-
-        if ((mDeviceController != null) && (mState.equals(ARCONTROLLER_DEVICE_STATE_ENUM.ARCONTROLLER_DEVICE_STATE_RUNNING))) {
-            try {
-                res = mDeviceController.hasOutputVideoStream();
-            } catch (ARControllerException e) {
-                e.printStackTrace();
-            }
-        }
-
-        return res;
-    }
-
-    public boolean hasOutputAudioStream() {
-        boolean res = false;
-
-        if (mDeviceController != null) {
-            try {
-                res = mDeviceController.hasOutputAudioStream();
-            } catch (ARControllerException e) {
-                e.printStackTrace();
-            }
-        }
-
-        return res;
-    }
-
-    public boolean hasInputAudioStream() {
-        boolean res = false;
-
-        if (mDeviceController != null) {
-            try {
-                res = mDeviceController.hasInputAudioStream();
-            } catch (ARControllerException e) {
-                e.printStackTrace();
-            }
-        }
-
-        return res;
     }
 
     //region notify listener block
@@ -398,45 +357,24 @@ public class JSDrone {
         }
     }
 
-    private void notifyPictureTaken(ARCOMMANDS_JUMPINGSUMO_MEDIARECORDEVENT_PICTUREEVENTCHANGED_ERROR_ENUM error) {
+    private void notifyPilotingStateChanged(ARCOMMANDS_MINIDRONE_PILOTINGSTATE_FLYINGSTATECHANGED_STATE_ENUM state) {
+        List<Listener> listenersCpy = new ArrayList<>(mListeners);
+        for (Listener listener : listenersCpy) {
+            listener.onPilotingStateChanged(state);
+        }
+    }
+
+    private void notifyFlyingModeChanged(ARCOMMANDS_MINIDRONE_PILOTINGSTATE_FLYINGMODECHANGED_MODE_ENUM flyingMode) {
+        List<Listener> listenersCpy = new ArrayList<>(mListeners);
+        for (Listener listener : listenersCpy) {
+            listener.onFlyingModeChanged(flyingMode);
+        }
+    }
+
+    private void notifyPictureTaken(ARCOMMANDS_MINIDRONE_MEDIARECORDEVENT_PICTUREEVENTCHANGED_ERROR_ENUM error) {
         List<Listener> listenersCpy = new ArrayList<>(mListeners);
         for (Listener listener : listenersCpy) {
             listener.onPictureTaken(error);
-        }
-    }
-
-    private void notifyAudioState(boolean inputEnabled, boolean outputEnabled) {
-        List<Listener> listenersCpy = new ArrayList<>(mListeners);
-        for (Listener listener : listenersCpy) {
-            listener.onAudioStateReceived(inputEnabled, outputEnabled);
-        }
-    }
-
-    private void notifyConfigureDecoder(ARControllerCodec codec) {
-        List<Listener> listenersCpy = new ArrayList<>(mListeners);
-        for (Listener listener : listenersCpy) {
-            listener.configureDecoder(codec);
-        }
-    }
-
-    private void notifyFrameReceived(ARFrame frame) {
-        List<Listener> listenersCpy = new ArrayList<>(mListeners);
-        for (Listener listener : listenersCpy) {
-            listener.onFrameReceived(frame);
-        }
-    }
-
-    private void notifyConfigureAudioDecoder(ARControllerCodec codec) {
-        List<Listener> listenersCpy = new ArrayList<>(mListeners);
-        for (Listener listener : listenersCpy) {
-            listener.configureAudioDecoder(codec);
-        }
-    }
-
-    private void notifyAudioFrameReceived(ARFrame frame) {
-        List<Listener> listenersCpy = new ArrayList<>(mListeners);
-        for (Listener listener : listenersCpy) {
-            listener.onAudioFrameReceived(frame);
         }
     }
 
@@ -498,10 +436,10 @@ public class JSDrone {
         @Override
         public void onStateChanged(ARDeviceController deviceController, ARCONTROLLER_DEVICE_STATE_ENUM newState, ARCONTROLLER_ERROR_ENUM error) {
             mState = newState;
-            if (ARCONTROLLER_DEVICE_STATE_ENUM.ARCONTROLLER_DEVICE_STATE_RUNNING.equals(mState)) {
-                mDeviceController.getFeatureJumpingSumo().sendMediaStreamingVideoEnable((byte) 1);
-            } else if (ARCONTROLLER_DEVICE_STATE_ENUM.ARCONTROLLER_DEVICE_STATE_STOPPED.equals(mState)) {
-                mSDCardModule.cancelGetFlightMedias();
+            if (ARCONTROLLER_DEVICE_STATE_ENUM.ARCONTROLLER_DEVICE_STATE_STOPPED.equals(mState)) {
+                if (mSDCardModule != null) {
+                    mSDCardModule.cancelGetFlightMedias();
+                }
             }
             mHandler.post(new Runnable() {
                 @Override
@@ -530,12 +468,26 @@ public class JSDrone {
                     });
                 }
             }
-            // if event received is the picture notification
-            else if ((commandKey == ARCONTROLLER_DICTIONARY_KEY_ENUM.ARCONTROLLER_DICTIONARY_KEY_JUMPINGSUMO_MEDIARECORDEVENT_PICTUREEVENTCHANGED) && (elementDictionary != null)){
+            // if event received is the flying state update
+            else if ((commandKey == ARCONTROLLER_DICTIONARY_KEY_ENUM.ARCONTROLLER_DICTIONARY_KEY_MINIDRONE_PILOTINGSTATE_FLYINGSTATECHANGED) && (elementDictionary != null)) {
                 ARControllerArgumentDictionary<Object> args = elementDictionary.get(ARControllerDictionary.ARCONTROLLER_DICTIONARY_SINGLE_KEY);
                 if (args != null) {
-                    final ARCOMMANDS_JUMPINGSUMO_MEDIARECORDEVENT_PICTUREEVENTCHANGED_ERROR_ENUM error =
-                            ARCOMMANDS_JUMPINGSUMO_MEDIARECORDEVENT_PICTUREEVENTCHANGED_ERROR_ENUM.getFromValue((Integer) args.get(ARFeatureJumpingSumo.ARCONTROLLER_DICTIONARY_KEY_JUMPINGSUMO_MEDIARECORDEVENT_PICTUREEVENTCHANGED_ERROR));
+                    final ARCOMMANDS_MINIDRONE_PILOTINGSTATE_FLYINGSTATECHANGED_STATE_ENUM state = ARCOMMANDS_MINIDRONE_PILOTINGSTATE_FLYINGSTATECHANGED_STATE_ENUM.getFromValue((Integer) args.get(ARFeatureMiniDrone.ARCONTROLLER_DICTIONARY_KEY_MINIDRONE_PILOTINGSTATE_FLYINGSTATECHANGED_STATE));
+
+                    mHandler.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            mFlyingState = state;
+                            notifyPilotingStateChanged(state);
+                        }
+                    });
+                }
+            }
+            // if event received is the picture notification
+            else if ((commandKey == ARCONTROLLER_DICTIONARY_KEY_ENUM.ARCONTROLLER_DICTIONARY_KEY_MINIDRONE_MEDIARECORDEVENT_PICTUREEVENTCHANGED) && (elementDictionary != null)){
+                ARControllerArgumentDictionary<Object> args = elementDictionary.get(ARControllerDictionary.ARCONTROLLER_DICTIONARY_SINGLE_KEY);
+                if (args != null) {
+                    final ARCOMMANDS_MINIDRONE_MEDIARECORDEVENT_PICTUREEVENTCHANGED_ERROR_ENUM error = ARCOMMANDS_MINIDRONE_MEDIARECORDEVENT_PICTUREEVENTCHANGED_ERROR_ENUM.getFromValue((Integer)args.get(ARFeatureMiniDrone.ARCONTROLLER_DICTIONARY_KEY_MINIDRONE_MEDIARECORDEVENT_PICTUREEVENTCHANGED_ERROR));
                     mHandler.post(new Runnable() {
                         @Override
                         public void run() {
@@ -556,57 +508,19 @@ public class JSDrone {
                         }
                     });
                 }
-            }
-            // if event received is the audio state notification
-            else if ((commandKey == ARCONTROLLER_DICTIONARY_KEY_ENUM.ARCONTROLLER_DICTIONARY_KEY_COMMON_AUDIOSTATE_AUDIOSTREAMINGRUNNING) && (elementDictionary != null)){
+            } // if event received is the flying mode
+            else if ((commandKey == ARCONTROLLER_DICTIONARY_KEY_ENUM.ARCONTROLLER_DICTIONARY_KEY_MINIDRONE_PILOTINGSTATE_FLYINGMODECHANGED) && (elementDictionary != null)){
                 ARControllerArgumentDictionary<Object> args = elementDictionary.get(ARControllerDictionary.ARCONTROLLER_DICTIONARY_SINGLE_KEY);
                 if (args != null) {
-                    final int state = (Integer) args.get(ARFeatureCommon.ARCONTROLLER_DICTIONARY_KEY_COMMON_AUDIOSTATE_AUDIOSTREAMINGRUNNING_RUNNING);
-                    final boolean inputEnabled = (state & 0x01) != 0;
-                    final boolean outputEnabled = (state & 0x02) != 0;
-
+                    final ARCOMMANDS_MINIDRONE_PILOTINGSTATE_FLYINGMODECHANGED_MODE_ENUM flyingMode = ARCOMMANDS_MINIDRONE_PILOTINGSTATE_FLYINGMODECHANGED_MODE_ENUM.getFromValue((Integer)args.get(ARFeatureMiniDrone.ARCONTROLLER_DICTIONARY_KEY_MINIDRONE_PILOTINGSTATE_FLYINGMODECHANGED_MODE));
                     mHandler.post(new Runnable() {
                         @Override
                         public void run() {
-                            notifyAudioState(inputEnabled, outputEnabled);
+                            notifyFlyingModeChanged(flyingMode);
                         }
                     });
                 }
             }
         }
-    };
-
-    private final ARDeviceControllerStreamListener mStreamListener = new ARDeviceControllerStreamListener() {
-        @Override
-        public ARCONTROLLER_ERROR_ENUM configureDecoder(ARDeviceController deviceController, final ARControllerCodec codec) {
-            notifyConfigureDecoder(codec);
-            return ARCONTROLLER_ERROR_ENUM.ARCONTROLLER_OK;
-        }
-
-        @Override
-        public ARCONTROLLER_ERROR_ENUM onFrameReceived(ARDeviceController deviceController, final ARFrame frame) {
-            notifyFrameReceived(frame);
-            return ARCONTROLLER_ERROR_ENUM.ARCONTROLLER_OK;
-        }
-
-        @Override
-        public void onFrameTimeout(ARDeviceController deviceController) {}
-    };
-
-    private final ARDeviceControllerStreamListener mAudioStreamListener = new ARDeviceControllerStreamListener() {
-        @Override
-        public ARCONTROLLER_ERROR_ENUM configureDecoder(ARDeviceController deviceController, final ARControllerCodec codec) {
-            notifyConfigureAudioDecoder(codec);
-            return ARCONTROLLER_ERROR_ENUM.ARCONTROLLER_OK;
-        }
-
-        @Override
-        public ARCONTROLLER_ERROR_ENUM onFrameReceived(ARDeviceController deviceController, final ARFrame frame) {
-            notifyAudioFrameReceived(frame);
-            return ARCONTROLLER_ERROR_ENUM.ARCONTROLLER_OK;
-        }
-
-        @Override
-        public void onFrameTimeout(ARDeviceController deviceController) {}
     };
 }

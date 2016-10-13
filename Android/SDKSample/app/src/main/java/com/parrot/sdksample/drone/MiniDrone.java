@@ -130,11 +130,18 @@ public class MiniDrone {
             ARDiscoveryDevice discoveryDevice = createDiscoveryDevice(context, deviceService, mProductType);
             if (discoveryDevice != null) {
                 mDeviceController = createDeviceController(discoveryDevice);
+                discoveryDevice.dispose();
             }
 
         } else {
             Log.e(TAG, "DeviceService type is not supported by MiniDrone");
         }
+    }
+
+    public void dispose()
+    {
+        if (mDeviceController != null)
+            mDeviceController.dispose();
     }
 
     //region Listener functions
